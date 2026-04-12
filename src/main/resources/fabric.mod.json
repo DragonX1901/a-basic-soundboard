@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "a-basic-soundboard",
+  "version": "${version}",
+  "name": "A Basic Soundboard",
+  "description": "A client-side soundboard mod with Simple Voice Chat integration. Play .mp3 sounds through voice chat so nearby players can hear them.",
+  "authors": ["dx"],
+  "contact": {},
+  "license": "Apache-2.0",
+  "icon": "assets/a-basic-soundboard/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.dx.aBasicSoundboard.client.ABasicSoundboardClient"
+    ],
+    "voicechat": [
+      "org.dx.aBasicSoundboard.client.SoundboardVoicechatPlugin"
+    ]
+  },
+  "mixins": [
+    {
+      "config": "a-basic-soundboard.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "minecraft": "${minecraft_version}"
+  },
+  "suggests": {
+    "voicechat": "*"
+  }
+}

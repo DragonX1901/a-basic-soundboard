@@ -1,0 +1,10 @@
+{
+  "key.a-basic-soundboard.open_soundboard": "Open Soundboard",
+  "key.a-basic-soundboard.stop_all_sounds": "Stop All Sounds",
+
+  "screen.a-basic-soundboard.search": "Search",
+  "screen.a-basic-soundboard.reload": "Reload Sounds",
+  "screen.a-basic-soundboard.stop_all": "Stop All",
+
+  "message.a-basic-soundboard.stopped_all": "Stopped all sounds"
+}

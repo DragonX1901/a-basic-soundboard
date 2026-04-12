@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(modrepo.de)",
+      "WebFetch(github.com)",
+      "WebFetch(maven.maxhenkel.de)",
+      "Bash(del *)",
+      "Bash(mkdir *)",
+      "Bash(gradlew.bat *)",
+      "Bash(powershell *)",
+      "Bash(dir *)",
+      "Bash(set *)",
+      "Bash(.\\gradlew.bat *)",
+      "Bash(findstr *)",
+      "Bash(rmdir *)",
+      "Bash(git init)",
+      "Bash(git add *)"
+    ]
+  },
+  "$version": 3
+}
