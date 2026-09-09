@@ -144,3 +144,46 @@ When a mitigation has two code paths, bugs hide in the *asymmetry*:
 *Nothing in these notes is a confirmed vulnerability. They are a research
 starting point and an example of eligibility reasoning. Verify against live
 source before acting.*
+
+---
+
+## Sec-high hunt — leads chased and ruled out (honest audit trail)
+
+Pursuing a higher-severity (sec-high: UXSS / sandbox escape / high-value disclosure)
+issue in the Smart Window. Each concrete lead below was ruled out with a specific
+reason — recording them so the effort isn't repeated and so nothing here gets filed
+as an Invalid.
+
+1. **Escalate the thumbnail SSRF to code exec via `javascript:`** — tested live:
+   `captureThumbnail("javascript:fetch(...)")` does not execute (hangs, no listener
+   hit). No chrome code-exec via that scheme.
+2. **Thumbnail browser runs attacker JS in the parent process** — `BackgroundPageThumbs`
+   creates the thumb `<browser>` with `type="content" remote="true"` (OOP; has
+   `oop-browser-crashed` handling). Attacker page JS therefore runs in a *content*
+   process under the page's own origin — not the parent, not system principal. No
+   sandbox escape.
+3. **`file://` local-file read via the system-principal thumbnail load** — tested:
+   returns `null` (no render). Not exploitable (already folded into finding 01).
+4. **`MonitorAgent._openWatchedUrl` → `openTrustedLinkIn(url)` (system principal, no
+   scheme check)** — reachable only with `url = monitor.watchUrls[0]`, and
+   `trimAndFilterWatchUrls`/`isAllowedWatchUrl` enforce http/https at creation AND
+   update in the parent. A `javascript:`/`file:` watchUrl can never be stored, so the
+   open path only ever gets http/https. Defense-in-depth inconsistency (it should
+   validate at use, not rely on the creation filter), **not** an exploitable bug.
+5. **`AIWindowUI.reopenConversationInTab` / `#handleTopSiteSelected` →
+   `openTrustedLinkIn` (system principal)** — URLs are user-navigated conversation
+   pages / Places top sites, not attacker-controlled. No privilege escalation.
+6. **Agentic tools (`Tools.sys.mjs`) driving privileged actions on injected web
+   content** — the tool layer enforces an http/https allowlist (`isAllowedURL`) and a
+   deliberate prompt-injection exfiltration guard (`isContentAllowed` gates model-chosen
+   fetches on `securityProperties.untrustedInput && privateData`). Security-aware; no
+   obvious hole by inspection.
+7. **`SmartFormFillReviewParent`** — asserts sender `remoteType === privilegedabout`
+   and validates action types against an allowlist before delegating. Well-guarded.
+
+**Status:** No sec-high confirmed. The Smart Window's privileged surfaces are
+consistently defended; the one real defect found is the sec-moderate SSRF (finding 01).
+A genuine sec-high here would most likely require (a) fuzzing the media/parser stack
+(memory corruption — needs a fuzzing harness, not static review), or (b) a live
+prompt-injection harness driving the agent tools against a malicious page to probe the
+`untrustedInput`/`privateData` taint logic for a bypass. Both are multi-session efforts.
