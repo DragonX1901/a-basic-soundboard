@@ -3,17 +3,23 @@
 **Status:** **Full content→parent SSRF reproduced live, end-to-end** on the official
 Mozilla ASAN build (Firefox 157.0a1, BuildID 20260909083822, `linux64-asan-opt`).
 Ordinary content-page script in `about:aichatcontent` (no user gesture) drives the
-parent process to fetch an attacker-controlled URL through the real
+parent process to fetch an attacker-controlled **http/https** URL through the real
 `AIChatContent:RequestAssets` IPC path. See [Confirmed reproduction](#confirmed-reproduction)
-and `poc/EVIDENCE.txt`. The `file://` local-image oracle is analyzed but was not landed
-cleanly in the headless test environment (see notes).
+and `poc/EVIDENCE.txt`.
+**Correction after testing:** the speculated `file://` local-file disclosure oracle does
+**not** work through this sink — `file://` returns `null` (no thumbnail rendered). The
+confirmed impact is a content-reachable **parent-process SSRF over http/https** (incl.
+loopback/intranet), **not** local-file read. Severity is correspondingly **sec-moderate**
+(committee's call), not the higher local-disclosure tier the first draft speculated.
 **Component:** `browser/components/aiwindow` (Smart Window / AI window), thumbnail service.
 **Class:** Content-process → parent-process SSRF + cross-process information-disclosure
 (unvalidated URL reaches a system-principal load).
-**Estimated rating:** sec-moderate → sec-high. Maps to Mozilla's *"Information
-disclosure from the parent to a web content process"* (High Impact, $3,000) and an
-SSRF primitive. Final rating depends on the committee's weighting of the
-`privilegedabout` precondition (see Preconditions).
+**Estimated rating:** **sec-moderate** (was speculatively higher before testing). The
+confirmed primitive is a content-reachable **parent-process SSRF** over http/https;
+the local-file disclosure that would have pushed this into Mozilla's *"Information
+disclosure from the parent to a web content process"* (High/$3,000) tier was **tested
+and does not work** (`file://` renders nothing). Final rating and any bounty are the
+committee's call, weighing the `privilegedabout` precondition (see Preconditions).
 **Analyzed against:** `mozilla-central` commit `023cb8315420` (2026-09-09). Re-verify
 on current source before filing — line numbers drift.
 
@@ -30,12 +36,13 @@ URL in a parent-process background browser using the **system principal** as the
 triggering principal, with no scheme restriction, then returns a
 content-accessible `moz-page-thumb://` result.
 
-A compromised `privilegedabout` content process can therefore make the **parent
-process** fetch arbitrary URLs (SSRF, including `file://`, `http://localhost`,
-intranet hosts, `resource://`, `chrome://`, `about:`), and learn — via whether a
-non-empty thumbnail comes back — the existence/renderability of local files and
-internal resources it otherwise cannot reach. Every *other* URL entry point in the
-same feature enforces `http:`/`https:`; this one is the exception.
+Content-scope script in `about:aichatcontent` (or a compromised `privilegedabout`
+content process) can therefore make the **parent process** fetch arbitrary
+**http/https** URLs (SSRF), including `http://localhost`/intranet hosts unreachable
+from a content process. (Local schemes like `file://` reach the system-principal
+`loadURI` but do not render to a thumbnail — see the tested-negative note under
+Impact — so this is an SSRF, not a local-file read.) Every *other* URL entry point in
+the same feature enforces `http:`/`https:`; this one is the exception.
 
 ---
 
@@ -131,22 +138,23 @@ protection. **Nothing restricts the scheme.** With a system triggering principal
 
 ## Impact
 
-From a compromised `privilegedabout` content process:
+From content-scope script in `about:aichatcontent` (or a compromised `privilegedabout`
+content process):
 
-1. **Parent-process SSRF.** Force the parent to issue GET requests to any URL,
-   including `http://localhost`/intranet endpoints unreachable from a content
-   process, with the parent's network position. (`LOAD_ANONYMOUS`, so no cookies —
-   still reaches internal services.)
-2. **Cross-process existence / renderability oracle.** Point `thumbnail` at
-   `file:///path/to/image.png` (or `resource://`, `chrome://`, `about:` internal
-   pages). A non-empty result (`image` is a `moz-page-thumb://` URL vs `null`)
-   discloses whether the target exists and renders — information the sandboxed
-   content process cannot otherwise obtain. A rendered thumbnail of the resource is
-   generated into the content-reachable `moz-page-thumb://` store.
+1. **Parent-process SSRF (confirmed).** Force the parent to issue GET requests to
+   arbitrary **http/https** URLs, including `http://localhost`/intranet endpoints
+   unreachable from a content process, with the parent's network position.
+   (`LOAD_ANONYMOUS`, so no cookies — still reaches internal services and can be used
+   as a reachability/port oracle.)
 
-The clean, guaranteed primitives are SSRF and the existence/renderability oracle.
-Full pixel readback of the resulting thumbnail from the content side may be limited
-by canvas tainting (not required for the finding, and not claimed here).
+**Tested and does NOT work:** pointing `thumbnail` at `file://` (or other local
+schemes) to read local files. Despite the system triggering principal in
+`BackgroundThumbnailsChild`, `captureThumbnail("file:///…png")` returns `null` — no
+thumbnail is rendered, so there is no local-file disclosure via this path. The first
+draft speculated this oracle; live testing refuted it. The finding is therefore a
+content-reachable **SSRF**, not local-file read. Full pixel readback of the http(s)
+thumbnail from the content side may additionally be limited by canvas tainting (not
+required for, and not claimed by, this finding).
 
 ---
 
@@ -263,36 +271,35 @@ listener: GET /ipc-e2e-1788954754 from 127.0.0.1     <-- PARENT fetched the atta
   injection/UXSS in that page or a compromised `privilegedabout` content process — page
   script is not normally attacker-controlled. This is the real precondition and is stated
   plainly for the committee.
-- ◻️ The **`file://` local-image oracle** was attempted but the background-thumbnail
-  capture hung in the headless test environment (a capture-queue/gfx artifact, not a
-  security control); no clean positive local-file disclosure was landed here. SSRF is
-  confirmed end-to-end; the local-file oracle remains plausible per the code path but
-  unproven in this run.
+- ❌ The **`file://` local-file oracle** was tested and **does not work**: a valid local
+  PNG returns `null` (no thumbnail rendered), a missing path hangs. So there is no
+  local-file disclosure via this sink. Confirmed impact is SSRF over http/https only.
 
-## PoC steps to confirm in a build (ASAN/debug Nightly)
+## Reproducing from scratch (the exact steps used)
 
-1. Build/run with `browser.smartwindow.enabled=true` (and, if needed,
-   `--enable-address-sanitizer`), or use a Nightly where the feature is on.
-2. Open the Smart Window so `about:aichatcontent` is live.
-3. In that document's process (simulating a compromised content process — e.g. via
-   the Browser Toolbox attached to the `privilegedabout` frame, or a content-process
-   JS injection harness), obtain the `AIChatContent` child actor and send:
+1. `pip install fuzzfetch marionette-driver` then
+   `fuzzfetch --target firefox --asan -n asan-ff` (official ASAN build; Nightly with the
+   feature on also works).
+2. Start a local HTTP listener on `127.0.0.1:8899` (see `poc/ssrf_listener.py`).
+3. Launch headless with a profile that sets `browser.smartwindow.enabled=true`:
+   `MOZ_HEADLESS=1 ASAN_OPTIONS=detect_leaks=0 ./firefox -headless -marionette
+   -remote-allow-system-access -profile <prof> about:blank`.
+4. End-to-end (recommended, `poc/poc_e2e.py`): Marionette `set_context("content")`,
+   navigate to `about:aichatcontent`, then run as page script:
    ```js
-   actor.sendAsyncMessage("AIChatContent:RequestAssets", {
-     conversationId: "poc", messageId: "poc",
-     items: [{ url: "http://x/", thumbnail: "file:///etc/hostname" },
-             { url: "http://x/", thumbnail: "file:///path/to/known-image.png" },
-             { url: "http://x/", thumbnail: "http://127.0.0.1:PORT/internal" }],
-   });
+   const detail = { conversationId:"poc", messageId:"poc",
+     items:[{ url:"http://127.0.0.1:8899/ignored",
+              thumbnail:"http://127.0.0.1:8899/ssrf-<unique>" }] };
+   (document.querySelector("ai-chat-content") || document.body)
+     .dispatchEvent(new CustomEvent("AIChatContent:RequestAssets",
+                    { detail, bubbles:true, composed:true }));
    ```
-4. Observe: the parent background-thumbnail browser issues the loads (instrument
-   `BackgroundThumbnailsChild` `Browser:Thumbnail:LoadURL`, or a local HTTP listener
-   on 127.0.0.1 to see the SSRF hit); and the `AIChatContent:AssetsReady` reply
-   carries a non-null `image` (`moz-page-thumb://…`) for renderable targets vs `null`
-   otherwise — the disclosure oracle.
-5. Capture the exact loads and the system-principal triggering principal for the
-   report (a `root cause analysis` per Mozilla's report criteria; an ASAN stack is
-   not applicable to a logic bug).
+5. Observe the listener log record `GET /ssrf-<unique> from 127.0.0.1` — the **parent
+   process** fetched the attacker URL. (Sink-only variant: `poc/poc_file.py` /
+   `poc/poc_driver.py` call `captureThumbnail()` directly in chrome context.)
+The system-principal triggering-principal load and the SSRF hit together are the
+`root cause analysis` + `reproducible test case` Mozilla's report criteria ask for
+(an ASAN memory stack is not applicable to a logic bug).
 
 ---
 
@@ -306,5 +313,6 @@ listener: GET /ipc-e2e-1788954754 from 127.0.0.1     <-- PARENT fetched the atta
   enabled in the tested channel — accurate scoping protects your reporter
   reputation and avoids an `Invalid` mark.
 
-*This is a code-review finding with a complete call-chain trace, not a confirmed
-live exploit. Reproduce in a build before filing.*
+*The SSRF is confirmed live end-to-end on the official ASAN build (see Confirmed
+reproduction and `poc/`). Re-verify on the current channel you intend to file against,
+and confirm whether `browser.smartwindow.enabled` is on there, before filing.*

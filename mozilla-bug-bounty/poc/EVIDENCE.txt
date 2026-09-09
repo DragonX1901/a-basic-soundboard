@@ -67,3 +67,14 @@ Parent SSRF hit: GET /ipc-e2e-1788954754 from 127.0.0.1     <-- PARENT fetched a
    (Getting script into the privileged about:aichatcontent document still requires an
    injection/UXSS in that page or a compromised content process; page script is not
    normally attacker-controlled. Stated for honest severity scoping.)
+
+============================================================
+UPDATE 2 — file:// local-file oracle does NOT work (honest negative)
+============================================================
+Tested captureThumbnail() with a valid 64x64 local PNG and a missing path:
+  file:///home/user/poc/img64.png       -> result: null   (no thumbnail produced)
+  file:///home/user/poc/missing-*.png   -> capture hung (no result)
+Conclusion: file:// does not render to a thumbnail through this sink, so the
+speculated LOCAL-FILE disclosure oracle is NOT exploitable via this path.
+CONFIRMED impact is limited to: content-reachable PARENT-PROCESS SSRF over http/https
+(incl. loopback/intranet), triggered end-to-end by content-scope script with no gesture.
