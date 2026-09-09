@@ -171,6 +171,23 @@ required for, and not claimed by, this finding).
   is enabled in the channel you test (Nightly likely; verify before filing — a
   feature that is preffed-off in shipping channels affects eligibility).
 
+## Self-assessed severity
+
+I rate this **sec-moderate** on Mozilla's scale (no CVSS in the report itself, per
+program rules — this paragraph is for our own reference). Reasoning: the confirmed
+primitive is a **content-reachable, parent-process SSRF over http/https** that crosses
+the content→parent trust boundary with no user gesture. That boundary crossing is what
+makes it more than a nuisance. But three things hold it below sec-high: (1) the
+precondition is script execution inside the privileged `about:aichatcontent` document —
+not something a random web page can reach without a separate injection/UXSS or a
+content-process compromise; (2) the requests are anonymous `GET`s (`LOAD_ANONYMOUS`, no
+cookies/credentials), so it is a reachability/oracle primitive, not authenticated
+request forgery; and (3) the **local-file disclosure I originally speculated does not
+work** (`file://` renders nothing through this sink, tested live), so there is no
+high-value data theft. If a follow-up were to show either credentialed requests or a
+working local-resource read through this path, the rating should move up; as confirmed,
+sec-moderate is the honest ceiling.
+
 ---
 
 ## Suggested fix (matches the pattern used elsewhere in the feature)
